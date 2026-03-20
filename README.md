@@ -1,183 +1,128 @@
 # go-esl
 
-A production-grade FreeSWITCH ESL client for Go.
-
----
-
-## Overview
-
-goesl is a thread-safe, production-ready Go module for communicating with FreeSWITCH via its Event Socket Library (ESL). It handles connection lifecycle, authentication, command/reply pairing, and background event dispatch — with clean cancellation semantics throughout.
-
-## Features
-
-- Thread-safe concurrent `SendCommand` calls
-- Single shutdown path — no deadlocks or double-close on disconnect
-- Cancelled commands removed cleanly from queue (no swallowed replies)
-- Background event dispatch via `OnEvent` callback
-- Disconnect notification via `OnDisconnect` callback and `Done()` channel
-- Sentinel error `ErrDisconnected` for clean programmatic handling
-
----
+A lightweight FreeSWITCH ESL (Event Socket Library) client for Go.
 
 ## Installation
-
-### Option A — Local module (development)
-
-Place the `goesl` folder alongside your project, then add a `replace` directive to your `go.mod`:
-```
-require github.com/user/goesl v0.0.0
-
-replace github.com/user/goesl => ../goesl
-```
-
-Then run:
 ```bash
-go mod tidy
+go get github.com/jayobado/go-esl
 ```
 
-### Option B — Published module
+## Usage
 
-Once published to GitHub, import it directly:
-```bash
-go get github.com/you/goesl@v1.0.0
-```
-
----
-
-## Quick Start
+### Connecting
 ```go
-import "github.com/user/goesl"
+import "github.com/jayobado/go-esl"
 
-cli := goesl.NewClient(goesl.ClientOptions{
+client := freeswitch.NewClient(freeswitch.ClientOptions{
     Host:     "127.0.0.1",
     Port:     8021,
     Password: "ClueCon",
-    OnEvent: func(ev *goesl.EslEvent) {
-        fmt.Println("event:", ev.Get("Event-Name"))
-    },
-    OnDisconnect: func(err error) {
-        log.Println("disconnected:", err)
-    },
+    Timeout:  10 * time.Second,
 })
 
-if err := cli.Connect(context.Background()); err != nil {
+ctx := context.Background()
+if err := client.Connect(ctx); err != nil {
     log.Fatal(err)
 }
-defer cli.Disconnect()
-
-ev, err := cli.SendCommand(ctx, "api status")
-if err != nil { log.Fatal(err) }
-fmt.Println(ev.IsSuccess(), ev.Body)
+defer client.Disconnect()
 ```
 
----
+`Timeout` defaults to 30 seconds if not set. It applies to both the initial dial and to individual command responses.
 
-## Configuration
-
-### ClientOptions
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `Host` | `string` | `"127.0.0.1"` | FreeSWITCH ESL host |
-| `Port` | `int` | `8021` | FreeSWITCH ESL port |
-| `Password` | `string` | `"ClueCon"` | ESL password |
-| `Timeout` | `time.Duration` | `30s` | Dial timeout and command fallback deadline |
-| `EventBufferSize` | `int` | `64` | Background event channel buffer size |
-| `OnEvent` | `EventHandler` | `nil` | Called for every non-reply event (heartbeats, channel events, etc.) |
-| `OnDisconnect` | `func(error)` | `nil` | Called once when the connection is lost |
-
----
-
-## Client Interface
-
-| Method | Signature | Description |
-|---|---|---|
-| `Connect` | `Connect(ctx) error` | Dials and authenticates. Returns error on failure. |
-| `Disconnect` | `Disconnect() error` | Closes connection. Unblocks all pending `SendCommand` calls. |
-| `SendCommand` | `SendCommand(ctx, cmd) (*EslEvent, error)` | Sends a raw ESL command and waits for its reply. |
-| `Done` | `Done() <-chan struct{}` | Channel closed when the connection is lost. |
-
----
-
-## EslEvent
-
-Every reply and background event is delivered as an `*EslEvent`.
-
-| Method | Signature | Description |
-|---|---|---|
-| `Get` | `Get(key string) string` | Returns a header value by name (case-insensitive). |
-| `IsSuccess` | `IsSuccess() bool` | True if `Reply-Text` starts with `+OK`. |
-| `IsError` | `IsError() bool` | True if `Reply-Text` starts with `-ERR`. |
-| `Status` | `Status() ReplyStatus` | Returns `ReplyOK`, `ReplyError`, or `ReplyUnknown`. |
-| `String` | `String() string` | Human-readable representation for logging. |
-
----
-
-## Usage Examples
-
-### Subscribing to Events
+### Sending commands
 ```go
-cli.SendCommand(ctx, "event plain HEARTBEAT CHANNEL_CREATE CHANNEL_DESTROY")
-```
-
-FreeSWITCH will push matching events to your `OnEvent` handler.
-
-### Detecting Disconnects
-```go
-// Block until connection drops:
-<-cli.Done()
-
-// Non-blocking check:
-select {
-case <-cli.Done():
-    fmt.Println("lost connection")
-default:
-}
-```
-
-### Error Handling
-```go
-ev, err := cli.SendCommand(ctx, "api status")
-switch {
-case errors.Is(err, goesl.ErrDisconnected):
-    // reconnect logic
-case errors.Is(err, context.DeadlineExceeded):
-    // timed out
-case err != nil:
-    // other error
-}
-```
-
-### Sending a BGapi Command
-```go
-ev, err := cli.SendCommand(ctx, "bgapi originate sofia/gateway/mygw/15551234567 &echo")
+event, err := client.SendCommand(ctx, "api status")
 if err != nil {
     log.Fatal(err)
 }
-fmt.Println("job id:", ev.Get("Job-Uuid"))
+
+if event.IsSuccess() {
+    fmt.Println(event.Body)
+}
 ```
 
----
+### Using a context deadline
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
 
-## Architecture Notes
-
-The client runs a single goroutine (`processLoop`) that reads all frames off the wire in order. Command replies are matched to callers using a FIFO queue of channels — one channel per pending `SendCommand` call. This mirrors FreeSWITCH's guarantee that replies arrive in the same order as commands.
-
-Key design decisions:
-- **Single shutdown path** protected by `sync.Once` prevents double-close and deadlocks.
-- **Cancelled waiters** are removed from the queue with O(1) list removal, so no future reply is silently swallowed.
-- **Background events** (heartbeats, channel events, disconnect notices) are routed to `OnEvent` and never interfere with the reply queue.
-
-> **Note:** goesl does not implement automatic reconnection. Use `Done()` or `OnDisconnect` to detect drops and reconnect with your own backoff strategy.
-
----
-
-## File Structure
+event, err := client.SendCommand(ctx, "api sofia status")
+if err != nil {
+    // err is context.DeadlineExceeded if the deadline fired
+    log.Fatal(err)
+}
 ```
-goesl/
-├── event.go        # EslEvent type and ReplyStatus
-├── errors.go       # Sentinel errors (ErrDisconnected)
-├── client.go       # Client interface and ClientOptions
-├── client_impl.go  # Full implementation
-└── client_test.go  # 10 tests including race detector
+
+### Disconnecting
+```go
+if err := client.Disconnect(); err != nil {
+    log.Println("disconnect error:", err)
+}
 ```
+
+`Disconnect` is safe to call multiple times.
+
+## Working with events
+
+### EslEvent
+
+Every response from FreeSWITCH is returned as an `*EslEvent`.
+```go
+// Get a header value (key lookup is case-insensitive)
+replyText := event.Get("Reply-Text")
+
+// Check outcome
+if event.IsSuccess() { ... }
+if event.IsError()   { ... }
+
+// Access the response body (e.g. for api commands)
+fmt.Println(event.Body)
+
+// Print the full event
+fmt.Println(event.String())
+```
+
+### IsSuccess and IsError
+
+| Method | Condition |
+|--------|-----------|
+| `IsSuccess()` | `Reply-Text` starts with `+OK` |
+| `IsError()` | `Reply-Text` starts with `-ERR` |
+
+## Common commands
+```go
+// Check FreeSWITCH status
+event, err := client.SendCommand(ctx, "api status")
+
+// List active calls
+event, err := client.SendCommand(ctx, "api show calls")
+
+// Originate a call
+event, err := client.SendCommand(ctx, "api originate sofia/gateway/mygw/15551234567 &echo")
+
+// Reload a module
+event, err := client.SendCommand(ctx, "api reload mod_sofia")
+
+// Send a background API command
+event, err := client.SendCommand(ctx, "bgapi status")
+```
+
+## Options
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `Host` | `string` | — | FreeSWITCH ESL host |
+| `Port` | `int` | — | ESL port (default FreeSWITCH port is `8021`) |
+| `Password` | `string` | — | ESL password (set in `event_socket.conf.xml`) |
+| `Timeout` | `time.Duration` | `30s` | Dial timeout and per-command response timeout |
+
+## Notes
+
+- The client handles one command at a time in strict FIFO order — responses are matched to commands in the order they were sent. This matches FreeSWITCH's ESL protocol guarantee.
+- Only `command/reply` and `api/response` content types are currently handled. Inbound events (`text/event-plain`, `text/event-json`) are not dispatched to handlers in this version.
+- If the connection drops, all pending `SendCommand` calls unblock immediately with an error.
+- `Connect` must be called again after a disconnection — the client does not reconnect automatically. Wrap `Connect` in a retry loop if you need reconnection, following the same pattern used in [go-grpc-client](https://github.com/jayobado).
+
+## License
+
+[MIT](LICENSE)
