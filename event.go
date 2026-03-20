@@ -6,50 +6,29 @@ import (
 	"strings"
 )
 
-type ReplyStatus int
-
-const (
-	ReplyUnknown ReplyStatus = iota
-	ReplyOK
-	ReplyError
-)
-
-type EslEvent struct {
+type Event struct {
 	Headers map[string]string
 	Body    string
 }
 
-func (ev *EslEvent) Get(key string) string {
-	if ev == nil {
-		return ""
-	}
+func (ev *Event) Get(key string) string {
 	return ev.Headers[textproto.CanonicalMIMEHeaderKey(key)]
 }
 
-func (ev *EslEvent) Status() ReplyStatus {
-	if ev == nil {
-		return ReplyUnknown
-	}
-	replyText := ev.Get("Reply-Text")
-	switch {
-	case strings.HasPrefix(replyText, "+OK"), replyText == "+OK accepted":
-		return ReplyOK
-	case strings.HasPrefix(replyText, "-ERR"):
-		return ReplyError
-	default:
-		return ReplyUnknown
-	}
+func (ev *Event) IsSuccess() bool {
+	reply := ev.Get("Reply-Text")
+	return strings.HasPrefix(reply, "+OK")
 }
 
-func (ev *EslEvent) IsSuccess() bool { return ev.Status() == ReplyOK }
-func (ev *EslEvent) IsError() bool   { return ev.Status() == ReplyError }
+func (ev *Event) IsError() bool {
+	return strings.HasPrefix(ev.Get("Reply-Text"), "-ERR")
+}
 
-func (ev *EslEvent) String() string {
-	if ev == nil {
-		return "<nil event>"
-	}
+func (ev *Event) String() string {
 	if ev.Body != "" {
 		return fmt.Sprintf("Headers: %v, Body: %s", ev.Headers, ev.Body)
 	}
 	return fmt.Sprintf("Headers: %v", ev.Headers)
 }
+
+type EventHandler func(event *Event)
