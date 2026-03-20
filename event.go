@@ -1,4 +1,4 @@
-package goesl
+package esl
 
 import (
 	"fmt"
